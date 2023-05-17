@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_packed_sequence
 
 from conn.conn import CONN
@@ -19,14 +20,13 @@ class CrystalCONN(CONN):
     __in_sz = 1+9+9
 
     __OUTS: dict[str,slice] = {
-        'stress' : slice(0,9),
-        'dstress' : slice(9,18),
-        'dslip' : slice(18,18+__n_slip),
-        'tau' : slice(18+__n_slip, 18+2*__n_slip),
-        'Le' : slice(18+2*__n_slip,18+2*__n_slip+9)
+        'dstress' : slice(0,9),
+        'dslip' : slice(9,9+__n_slip),
+        'tau' : slice(9+__n_slip, 9+2*__n_slip),
+        'Le' : slice(9+2*__n_slip,9+2*__n_slip+9)
     }
 
-    __out_sz = 9 + 9 + 2*__n_slip + 9
+    __out_sz = 9 + 2*__n_slip + 9
 
     def __init__(
                  self,
@@ -48,7 +48,7 @@ class CrystalCONN(CONN):
 
         self.output_layer = nn.Linear(hidden_size,CrystalCONN.__out_sz,device=device)
     
-    def forward(self, input,h):
+    def forward(self, input,h=None):
 
         out, h = self.GRU(input,h)
 
@@ -62,7 +62,7 @@ class CrystalCONN(CONN):
         #inputs = packed_inputs.data
         #outputs = packed_outputs.data
 
-        loss = torch.zeros(1)
+        loss = 0
         # Batch loop
         batch_count = 0
         for k in range(inputs.shape[0]):
@@ -76,10 +76,10 @@ class CrystalCONN(CONN):
                 # Slice out the input tensors
                 dt = inputs[k,n,CrystalCONN.__INS['dt']]
                 L = inputs[k,n,CrystalCONN.__INS['L']]
-                stress = inputs[k,n,CrystalCONN.__INS['stress']]
+                stress_in = inputs[k,n,CrystalCONN.__INS['stress']]
 
                 # Slice out the outputs tensors
-                #stress = outputs[k,n,CrystalCONN.__OUTS['stress']]
+                stress_out = outputs[k,n,CrystalCONN.__OUTS['stress']]
                 dstress = outputs[k,n,CrystalCONN.__OUTS['dstress']]
                 dslip = outputs[k,n,CrystalCONN.__OUTS['dslip']]
                 tau = outputs[k,n,CrystalCONN.__OUTS['tau']]
@@ -87,11 +87,11 @@ class CrystalCONN(CONN):
 
                 De = self.__sym(Le)
 
-                loss += torch.abs(torch.sum(self.symmetry_eqn(stress=stress)))
+                loss += torch.abs(torch.sum(self.symmetry_eqn(stress=stress_out)))
                 loss += torch.abs(
                                   self.energy_eqn(
                                         dt=dt,
-                                        stress=stress,
+                                        stress=stress_in,
                                         L=L,
                                         De=De,
                                         tau=tau,
@@ -101,17 +101,17 @@ class CrystalCONN(CONN):
                                   torch.sum(
                                             self.constitutive_eqn(
                                                 dt=dt,
-                                                stress=stress,
+                                                stress=stress_in,
                                                 dstress=dstress,
                                                 L=L,
                                                 dslip=dslip)
                                             )
                                   )
-                # End of time loop
+            # End of time loop
 
             loss /= time_count
 
-            # End of batch loop
+        # End of batch loop
         loss /= batch_count
 
         return loss
@@ -149,9 +149,11 @@ class CrystalCONN(CONN):
 
         return ret
 
-    def configure_dataloaders(self, dataset: CONNDataset):
+    def configure_dataloaders(self, train_set: CONNDataset, val_set: CONNDataset,batch_size):
+        train_loader = DataLoader(train_set,batch_size=batch_size)
+        val_loader = DataLoader(val_set,batch_size=batch_size)
         
-        return super().configure_dataloaders(dataset)
+        return train_loader, val_loader
 
     def __sym(self,A: torch.Tensor):
         return 0.5*(A + self.__transpose(A))

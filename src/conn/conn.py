@@ -30,5 +30,5 @@ class CONN(nn.Module):
         raise NotImplementedError
     
     @abstractmethod
-    def configure_dataloaders(self,dataset: Dataset):
+    def configure_dataloaders(self):
         raise NotImplementedError
