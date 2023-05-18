@@ -12,7 +12,7 @@ class CrystalCONN(CONN):
 
     __n_slip = Crystal.n_slip
 
-    __INS: dict[str, slice] = {
+    __INS  = {
         'dt' : slice(0,1),
         'L' : slice(1,10),
         'stress' : slice(10,19)
@@ -20,7 +20,7 @@ class CrystalCONN(CONN):
 
     __in_sz = 1+9
 
-    __OUTS: dict[str,slice] = {
+    __OUTS = {
         'stress' : slice(0,9),
         'dstress' : slice(9,18),
         'dslip' : slice(18,18+__n_slip),
@@ -72,8 +72,6 @@ class CrystalCONN(CONN):
 
         if stress is None:
             stress = self.__init_stress(batch_size)
-        elif not is_batched:
-            h = h.unsqueeze(0)
 
         h_out = self.GRU(torch.cat((x[:,:-9],stress),dim=1),h)
 
@@ -81,10 +79,52 @@ class CrystalCONN(CONN):
 
         stress = (out[:,CrystalCONN.__OUTS['dstress']]+x[:,CrystalCONN.__INS['stress']]).clone()
 
-        return out,stress,h
-
+        return out,stress,h_out
     
+    def save(self, dir):
+        torch.save(self.state_dict(), dir)
+        return
+
+    def load(self,params,dir):
+        model = CrystalCONN(**params)
+        model.load_state_dict(torch.load(dir,map_location=torch.device('cpu')))
+        return model
+
+    def fast_loss(self, inputs, outputs, stresses, targets):
+        """This is a vectorized form of the loss function to speed up computation
+        on GPUs"""
+        dt = inputs[:, :, CrystalCONN.__INS['dt']]
+        L = inputs[:, :, CrystalCONN.__INS['L']]
+        stress_in = inputs[:, :, CrystalCONN.__INS['stress']]
+
+        dstress = outputs[:, :, CrystalCONN.__OUTS['dstress']]
+        dslip = outputs[:, :, CrystalCONN.__OUTS['dslip']]
+        tau = outputs[:, :, CrystalCONN.__OUTS['tau']]
+        Le = outputs[:, :, CrystalCONN.__OUTS['Le']]
+
+        stress_out = stresses[:, :, CrystalCONN.__STRESS]
+        target_stress = targets[:, :, CrystalCONN.__OUTS['stress']]
+
+        De = self.__sym(Le)
+
+        target_Loss = self.loss_fcn(stress_out, target_stress)
+
+        CoAM_Loss = torch.square(torch.mean(self.symmetry_eqn(stress=stress_out), dim=(1, 2))).mean()
+        E_Loss = torch.square(self.energy_eqn(dt, stress_in, L, De, tau, dslip)).mean()
+        CONN_Loss = torch.square(torch.mean(self.constitutive_eqn(dt, stress_in, dstress, L, dslip), dim=(1, 2))).mean()
+
+        loss = target_Loss + CoAM_Loss + E_Loss + CONN_Loss
+        loss = loss
+
+        return loss, CoAM_Loss, E_Loss, CONN_Loss, target_Loss
+
     def loss(self, inputs, outputs, stresses,targets):
+        """This is a VERY slow way to evaulate the loss. It is here as a first
+        step in understanding how the training is done since it makes the 
+        intended evaluation of the loss explicit without introducing some
+        potentially confusing vectorization measures. fast_loss() performs
+        this vectorization and is MUCH faster because of it but perhaps slightly
+        less readable."""
         
         loss = E_Loss = CoAM_Loss = CONN_Loss = target_Loss = 0
         # Batch loop
@@ -164,27 +204,36 @@ class CrystalCONN(CONN):
         domega = self.__asym(L)*dt
 
         ret: torch.Tensor = dstress
-        ret = ret - self.__contract(domega,stress).clone()
+        cont = self.__contract(domega,stress).clone()
+        ret = ret - cont
         ret = ret + self.__contract(stress,domega).clone()
         ret = ret - self.__ELAS_ddot_A(A=dD,crystal=self.__crystal).clone()
+
+        PA_expanded = torch.zeros((ret.shape[0],ret.shape[1],9),device=self.device,dtype=torch.float64)
+        WA_expanded = torch.zeros((ret.shape[0],ret.shape[1],9),device=self.device,dtype=torch.float64)
         for sys in range(self.__n_slip):
-            PA = torch.tensor(self.__crystal.PA[sys,:],device=self.device).view(9)
-            WA = torch.tensor(self.__crystal.WA[sys,:],device=self.device).view(9)
-            ret = ret + self.__ELAS_ddot_A(A=PA,crystal=self.__crystal).clone()
-            ret = ret + self.__contract(WA,stress).clone()
-            ret = ret - self.__contract(stress,WA).clone()
-            ret = ret * dslip[sys].clone()
-        ret = ret + stress*self.__trace(dD).clone()
+            
+            PA = torch.tensor(self.__crystal.PA[sys,:],device=self.device,dtype=torch.float64).view(9)
+            WA = torch.tensor(self.__crystal.WA[sys,:],device=self.device,dtype=torch.float64).view(9)
+
+            PA_expanded[:,:] = PA
+            WA_expanded[:,:] = WA
+            ret = ret + self.__ELAS_ddot_A(A=PA_expanded,crystal=self.__crystal).clone()
+            ret = ret + self.__contract(WA_expanded,stress).clone()
+            ret = ret - self.__contract(stress,WA_expanded).clone()
+            ret = torch.mul(ret[:,:],dslip[:,:,sys].unsqueeze(-1)) 
+        ret = ret + torch.mul(stress[:,:],self.__trace(dD).unsqueeze(-1))
 
         return ret
     
-    def energy_eqn(self,dt,stress,L,De,tau,dslip):
-
+    def energy_eqn(self, dt, stress, L, De, tau, dslip):
         D = self.__sym(L)
-        
-        ret = torch.dot(stress,D*dt)
-        ret = ret - torch.dot(stress,De*dt).clone()
-        ret = ret - torch.dot(tau,dslip).clone()
+        dD = torch.mul(D[:,:],dt[:,:])
+        dDe = torch.mul(De[:,:],dt[:,:])
+
+        ret = torch.einsum('...k,...k->...',stress,dD)
+        ret = ret - torch.einsum('...k,...k->...',stress,dDe)
+        ret = ret - torch.einsum('...k,...k->...',tau,dslip)
 
         return ret
 
@@ -199,19 +248,45 @@ class CrystalCONN(CONN):
 
     def __asym(self,A):
         return 0.5*(A - self.__transpose(A)).clone()
-        
-    def __contract(self,A: torch.Tensor,B: torch.Tensor):
-        return torch.matmul(A.view(3,3),B.view(3,3)).view(9)
 
-    def __transpose(self,A: torch.Tensor):
-        return A.reshape(3,3).transpose(0,1).reshape(9).clone()
+    def __contract(self, A: torch.Tensor, B: torch.Tensor):
+        A = A.reshape(A.shape[0],A.shape[1],3,3)
+        B = B.reshape(A.shape[0],A.shape[1],3,3)
+        result = torch.einsum('...ik,...kj->...ij', A, B)
+        result = result.reshape(result.shape[0],result.shape[1],9)
+        return result
+
+
+    def __transpose(self, A: torch.Tensor):
+        # Get the shape of the input tensor
+        shape = A.shape
+
+        # Reshape the tensor to a matrix of shape (N, 3, 3)
+        reshaped_A = A.reshape(-1, 3, 3)
+
+        # Transpose the matrix along the last two dimensions
+        transposed_A = reshaped_A.transpose(-2, -1)
+
+        # Reshape the transposed matrix back to a vector
+        transposed_A = transposed_A.reshape(shape)
+
+        return transposed_A.clone()
 
     def __trace(self,A: torch.Tensor):
-        return A.view(3,3)[::4].clone().sum()
-    
-    def __ELAS_ddot_A(self,A: torch.Tensor,crystal: Crystal):
-        ret = A
-        ELAS = torch.tensor(crystal.ELAS,device=self.device)
-        ret[:-3] = torch.matmul(ELAS,ret[:-3]).clone()
-        ret[-3:] = ret[-6:-3].clone()
+        A = A.reshape(A.shape[0],A.shape[1],9)
+        ret = A[:,:,::4].sum(dim=-1)
         return ret
+    
+    def __ELAS_ddot_A(self, A: torch.Tensor, crystal: Crystal):
+        ret = A.clone()
+        ELAS = torch.tensor(crystal.ELAS, device=self.device)
+        ELAS_expanded = torch.zeros((A.shape[0],A.shape[1],9,9),device=self.device,dtype=torch.float64)
+        ELAS_expanded[:,:,:6,:6] = ELAS
+        ret[:,:] = torch.einsum('...ik,...k->...i', ELAS_expanded[:,:], ret[:,:])
+
+        ret[:, :, -3:] = ret[:, :, -6:-3]
+        return ret
+
+
+
+

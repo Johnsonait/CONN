@@ -21,7 +21,7 @@ class Trainer():
                 optimizer: optim.Optimizer = optim.SGD,
                 epochs = 1000,
                 batch_size = 64,
-                train_params: dict[str,float] = {'lr' : 1.0e-3},
+                train_params = {'lr' : 1.0e-3},
                 device = torch.device('cpu')
                 ):
         self.epochs = epochs
@@ -41,8 +41,8 @@ class Trainer():
         self.validation_history = []
 
     def __save_histories(self):
-        np.savetxt('training.txt',np.array(self.training_history))
-        np.savetxt('validation.txt',np.array(self.validation_history))
+        np.savetxt('training/training.txt',np.array(self.training_history))
+        np.savetxt('training/validation.txt',np.array(self.validation_history))
 
         pass
 
@@ -50,6 +50,8 @@ class Trainer():
         print('\t\tNet Loss \tCoAM Loss \tEnergy Loss \tConstitutive Loss \tTarget Loss')
         for epoch in range(self.epochs):
             self.fit_epoch()
+
+            self.__model.save('./model.pt')
 
             self.__save_histories()
             print(f'Training  : {self.training_history[-1]}')
@@ -84,12 +86,12 @@ class Trainer():
             preds = torch.transpose(preds,dim0=1,dim1=0)
             stresses = torch.transpose(stresses ,dim0=1,dim1=0)
             
-            loss,CoAM,E,CONN,target = self.__model.loss(in_batch,preds,stresses,target_batch)
+            loss,CoAM,E,CONN,target = self.__model.fast_loss(in_batch,preds,stresses,target_batch)
             train_loss    += loss.item()
-            CoAM_Loss_t   += CoAM
-            E_Loss_t      += E
-            CONN_Loss_t   += CONN
-            target_Loss_t += target
+            CoAM_Loss_t   += CoAM.item()
+            E_Loss_t      += E.item()
+            CONN_Loss_t   += CONN.item()
+            target_Loss_t += target.item()
             
             loss.backward()
 
@@ -125,12 +127,12 @@ class Trainer():
                 preds = torch.transpose(preds,dim0=1,dim1=0)
                 stresses = torch.transpose(stresses ,dim0=1,dim1=0)
 
-                loss,CoAM,E,CONN,target = self.__model.loss(in_batch,preds,stresses,target_batch)
+                loss,CoAM,E,CONN,target = self.__model.fast_loss(in_batch,preds,stresses,target_batch)
                 val_loss      += loss.item()
-                CoAM_Loss_v   += CoAM
-                E_Loss_v      += E
-                CONN_Loss_v   += CONN
-                target_Loss_v += target
+                CoAM_Loss_v   += CoAM.item()
+                E_Loss_v      += E.item()
+                CONN_Loss_v   += CONN.item()
+                target_Loss_v += target.item()
 
         val_loss /= batch_count
         CoAM_Loss_v   /= batch_count

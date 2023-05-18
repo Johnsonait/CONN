@@ -70,9 +70,9 @@ class CONNDataset(Dataset):
                 outlier_indices.append(i)
         
         # Delete outlier sequences
-        self.inputs = np.delete(self.inputs, outlier_indices, axis=0)
-        self.targets = np.delete(self.targets, outlier_indices, axis=0)
-        self.lens = np.delete(self.lens, outlier_indices, axis=0)
+        #self.inputs = np.delete(self.inputs, outlier_indices, axis=0)
+        #self.targets = np.delete(self.targets, outlier_indices, axis=0)
+        #self.lens = np.delete(self.lens, outlier_indices, axis=0)
 
         # Reshape data back to 3D arrays
         self.inputs = self.inputs.reshape((self.inputs.shape[0], in_seq_length, in_features))

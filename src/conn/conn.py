@@ -20,6 +20,10 @@ class CONN(nn.Module):
     @abstractmethod
     def loss(self,inputs,outputs):
         raise NotImplementedError
+    
+    @abstractmethod
+    def fast_loss(self,inputs,outputs):
+        raise NotImplementedError
 
     @abstractmethod
     def constitutive_eqn(self,**vars):
@@ -27,6 +31,14 @@ class CONN(nn.Module):
     
     @abstractmethod 
     def energy_eqn(self,**vars):
+        raise NotImplementedError
+
+    @abstractmethod
+    def save(self,dir):
+        raise NotImplementedError
+
+    @abstractmethod
+    def load(self,dir):
         raise NotImplementedError
     
     @abstractmethod
