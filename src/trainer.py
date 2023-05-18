@@ -5,17 +5,19 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset,DataLoader
 from torch.nn.utils import clip_grad_norm_
+import numpy as np
 
-from conn.conn import CONN
-from conn.crystal_conn import CrystalCONN
-from early_stopper import EarlyStopper
+from .conn.conn import CONN
+from .conn.crystal_conn import CrystalCONN
+from .early_stopper import EarlyStopper
 
 class Trainer():
     
     def __init__(
                 self,
                 model: CONN,
-                dataset: Dataset,
+                train_dataset: Dataset,
+                val_dataset: Dataset,
                 optimizer: optim.Optimizer = optim.SGD,
                 epochs = 1000,
                 batch_size = 64,
@@ -27,74 +29,114 @@ class Trainer():
         self.device = device
 
         self.__model = model
-        self.__dataset = dataset
+        self.__train_dataset = train_dataset
+        self.__val_dataset = val_dataset
         self.__optimizer: optim.Optimizer = optimizer(model.parameters(),**train_params)
 
-        self.__train_loader, self.__val_loader = model.configure_dataloaders(dataset)
+        self.__train_loader, self.__val_loader = model.configure_dataloaders(train_dataset,val_dataset,batch_size)
         self.early_stopper = EarlyStopper()
 
         self.grad_clip_threshold = 5
+        self.training_history = []
+        self.validation_history = []
+
+    def __save_histories(self):
+        np.savetxt('training.txt',np.array(self.training_history))
+        np.savetxt('validation.txt',np.array(self.validation_history))
+
+        pass
 
     def fit(self):
+        print('\t\tNet Loss \tCoAM Loss \tEnergy Loss \tConstitutive Loss \tTarget Loss')
         for epoch in range(self.epochs):
-            train_loss, val_loss = self.fit_epoch()
-            
-            print(f'Training loss: {train_loss}')
-            print(f'Validation loss: {val_loss}')
+            self.fit_epoch()
 
-            if self.early_stopper.should_stop(val_loss):
+            self.__save_histories()
+            print(f'Training  : {self.training_history[-1]}')
+            print(f'Validation: {self.validation_history[-1]}')
+
+            if self.early_stopper.should_stop(self.validation_history[-1][0]):
                 print(f'Reached early stopping criteria!')
                 print(f'Minimum validation loss: {self.early_stopper.min_loss}')
                 return
 
     def fit_epoch(self):
-        train_loss = 0
-        val_loss = 0
-
+        train_loss = E_Loss_t = CoAM_Loss_t = CONN_Loss_t = target_Loss_t = 0
+        val_loss = E_Loss_v = CoAM_Loss_v = CONN_Loss_v = target_Loss_v = 0
         self.__model.train()
+        batch_count = 0
         for in_batch,target_batch,len_batch in self.__train_loader:
+            batch_count += 1
 
             self.__optimizer.zero_grad()
             h = None
-            stress = torch.zeros((in_batch.shape[0],9),device=self.device)
+            stress = None
             preds = []
+            stresses = []
             for t in range(in_batch.shape[1]):
-                pred, h = self.__model(in_batch[:,t,:],h)
-                stress = in_batch[:,t,CrystalCONN.__INS['stress']] + pred[:,CrystalCONN.__OUTS['dstress']]
-                if t < in_batch.shape[1]-1:
-                    in_batch[:,t+1,CrystalCONN.__INS['stress']] = stress
-                
-                preds.append(pred)
+                out,stress, h = self.__model(in_batch[:,t,:],stress,h)
+
+                stresses.append(stress)
+                preds.append(out)
             
             preds = torch.stack(preds)
+            stresses = torch.stack(stresses)
             preds = torch.transpose(preds,dim0=1,dim1=0)
+            stresses = torch.transpose(stresses ,dim0=1,dim1=0)
             
-            loss = self.__model.loss(in_batch,preds)
+            loss,CoAM,E,CONN,target = self.__model.loss(in_batch,preds,stresses,target_batch)
+            train_loss    += loss.item()
+            CoAM_Loss_t   += CoAM
+            E_Loss_t      += E
+            CONN_Loss_t   += CONN
+            target_Loss_t += target
+            
+            loss.backward()
 
             clip_grad_norm_(self.__model.parameters(), max_norm=self.grad_clip_threshold)
 
-            loss.backward()
-
             self.__optimizer.step()
+        
+        train_loss /= batch_count
+        CoAM_Loss_t   /= batch_count
+        E_Loss_t      /= batch_count
+        CONN_Loss_t   /= batch_count
+        target_Loss_t /= batch_count
+        self.training_history.append([train_loss,CoAM_Loss_t,E_Loss_t,CONN_Loss_t,target_Loss_t])
 
         self.__model.eval()
+        batch_count = 0
         with torch.no_grad():
             for in_batch,target_batch,len_batch in self.__val_loader:
+                batch_count += 1
 
                 h = None
-                stress = torch.zeros((in_batch.shape[0],9),device=self.device)
+                stress = None
                 preds = []
+                stresses = []
                 for t in range(in_batch.shape[1]):
-                    pred, h = self.__model(in_batch[:,t,:],h)
-                    stress = in_batch[:,t,CrystalCONN.__INS['stress']] + pred[:,CrystalCONN.__OUTS['dstress']]
-                    if t < in_batch.shape[1]-1:
-                        in_batch[:,t+1,CrystalCONN.__INS['stress']] = stress
+                    out,stress, h = self.__model(in_batch[:,t,:],stress,h)
 
-                    preds.append(pred)
+                    stresses.append(stress)
+                    preds.append(out)
 
                 preds = torch.stack(preds)
+                stresses = torch.stack(stresses)
                 preds = torch.transpose(preds,dim0=1,dim1=0)
+                stresses = torch.transpose(stresses ,dim0=1,dim1=0)
 
-                val_loss += self.__model.loss(in_batch,preds)
+                loss,CoAM,E,CONN,target = self.__model.loss(in_batch,preds,stresses,target_batch)
+                val_loss      += loss.item()
+                CoAM_Loss_v   += CoAM
+                E_Loss_v      += E
+                CONN_Loss_v   += CONN
+                target_Loss_v += target
 
-        return train_loss, val_loss
+        val_loss /= batch_count
+        CoAM_Loss_v   /= batch_count
+        E_Loss_v      /= batch_count
+        CONN_Loss_v   /= batch_count
+        target_Loss_v /= batch_count
+        self.validation_history.append([val_loss,CoAM_Loss_v,E_Loss_v,CONN_Loss_v,target_Loss_v])
+        
+        return 

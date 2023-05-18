@@ -1,0 +1,6 @@
+.DS_Store
+src/__pycache__
+src/conn/__pycache__
+*.hdf5
+*.txt
+*.sav

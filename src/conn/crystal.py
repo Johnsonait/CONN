@@ -58,24 +58,24 @@ class Crystal():
 
         return
 
-    def __SA():
-        SA = np.zeros(Crystal.n_slip,3,3)
+    def __SA(self):
+        SA = np.zeros((Crystal.n_slip,3,3))
         for sys in range(Crystal.n_slip):
             m_vec = Crystal.__m_vec[sys,:]
             s_vec = Crystal.__s_vec[sys,:]
 
             SA[sys,:,:] = np.outer(s_vec,m_vec)
-        return
+        return SA
 
     def __PA(self,SA):
-        PA = np.zeros(Crystal.n_slip,3,3)
+        PA = np.zeros((Crystal.n_slip,3,3))
         for sys in range(Crystal.n_slip):
             SA_sys = SA[sys,:,:]
             PA[sys,:,:] = 0.5*(SA_sys + np.transpose(SA_sys))
         return PA
 
     def __WA(self,SA):
-        WA = np.zeros(Crystal.n_slip,3,3)
+        WA = np.zeros((Crystal.n_slip,3,3))
         for sys in range(Crystal.n_slip):
             SA_sys = SA[sys,:,:]
             WA[sys,:,:] = 0.5*(SA_sys - np.transpose(SA_sys))
@@ -83,6 +83,7 @@ class Crystal():
 
 
     def __ELAS(self,C11,C12,C44):
+
         ELAS = np.array([
             [C11,C12,C12,0,  0,  0  ],
             [C12,C11,C12,0,  0,  0  ],
@@ -91,4 +92,4 @@ class Crystal():
             [0,  0,  0,  0,  C44,0  ],
             [0,  0,  0,  0,  0,  C44]
         ])
-        return
+        return ELAS/C11

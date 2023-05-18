@@ -28,7 +28,7 @@ class CONNDataset(Dataset):
         self.__file_name = file_name
         self.device = device
         feature_range = (-1,1)
-        
+
         must_fit = False
         if scalers is not None:
             self.input_scaler=scalers['input']
@@ -40,10 +40,10 @@ class CONNDataset(Dataset):
 
         self.__dataset = h5py.File(f'{dir}/{file_name}','r')
 
-        self.__data = Dataset(self.__dataset[split],device=device)
-        self.inputs = self.__data[CONNDataset.input_label]
-        self.targets = self.__data[CONNDataset.target_label]
-        self.lens = self.__data[CONNDataset.len_label]
+        self.__data =self.__dataset[split]
+        self.inputs = self.__data[CONNDataset.input_label][:]
+        self.targets = self.__data[CONNDataset.target_label][:]
+        self.lens = self.__data[CONNDataset.len_label][:]
 
         # Assuming X is a three-dimensional array with shape (num_sequences, seq_length, num_features)
         in_sequences, in_seq_length, in_features = self.inputs.shape
@@ -84,7 +84,7 @@ class CONNDataset(Dataset):
         target_2d = self.targets.reshape((target_sequences * target_seq_length, target_features))
 
         self.sample_count = self.lens.shape[0]
-        print(f'{self.split} samples: {self.sample_count}')
+        print(f'{split} samples: {self.sample_count}')
         
         # Fit the scaler to the two-dimensional array of features
         if must_fit:
