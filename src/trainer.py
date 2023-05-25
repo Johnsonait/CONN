@@ -1,5 +1,3 @@
-from abc import abstractmethod
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -54,8 +52,10 @@ class Trainer():
             self.__model.save('./model.pt')
 
             self.__save_histories()
+            print(f'Epoch: {epoch}')
             print(f'Training  : {self.training_history[-1]}')
             print(f'Validation: {self.validation_history[-1]}')
+            print(" ")
 
             if self.early_stopper.should_stop(self.validation_history[-1][0]):
                 print(f'Reached early stopping criteria!')
@@ -65,26 +65,14 @@ class Trainer():
     def fit_epoch(self):
         train_loss = E_Loss_t = CoAM_Loss_t = CONN_Loss_t = target_Loss_t = 0
         val_loss = E_Loss_v = CoAM_Loss_v = CONN_Loss_v = target_Loss_v = 0
+
         self.__model.train()
         batch_count = 0
         for in_batch,target_batch,len_batch in self.__train_loader:
             batch_count += 1
-
             self.__optimizer.zero_grad()
-            h = None
-            stress = None
-            preds = []
-            stresses = []
-            for t in range(in_batch.shape[1]):
-                out,stress, h = self.__model(in_batch[:,t,:],stress,h)
 
-                stresses.append(stress)
-                preds.append(out)
-            
-            preds = torch.stack(preds)
-            stresses = torch.stack(stresses)
-            preds = torch.transpose(preds,dim0=1,dim1=0)
-            stresses = torch.transpose(stresses ,dim0=1,dim1=0)
+            preds,stresses, _ = self.__model(in_batch)
             
             loss,CoAM,E,CONN,target = self.__model.fast_loss(in_batch,preds,stresses,target_batch)
             train_loss    += loss.item()
@@ -99,7 +87,7 @@ class Trainer():
 
             self.__optimizer.step()
         
-        train_loss /= batch_count
+        train_loss    /= batch_count
         CoAM_Loss_t   /= batch_count
         E_Loss_t      /= batch_count
         CONN_Loss_t   /= batch_count
@@ -112,20 +100,10 @@ class Trainer():
             for in_batch,target_batch,len_batch in self.__val_loader:
                 batch_count += 1
 
-                h = None
-                stress = None
-                preds = []
-                stresses = []
-                for t in range(in_batch.shape[1]):
-                    out,stress, h = self.__model(in_batch[:,t,:],stress,h)
+                preds = None
+                stresses = None
 
-                    stresses.append(stress)
-                    preds.append(out)
-
-                preds = torch.stack(preds)
-                stresses = torch.stack(stresses)
-                preds = torch.transpose(preds,dim0=1,dim1=0)
-                stresses = torch.transpose(stresses ,dim0=1,dim1=0)
+                preds,stresses, _ = self.__model(in_batch)
 
                 loss,CoAM,E,CONN,target = self.__model.fast_loss(in_batch,preds,stresses,target_batch)
                 val_loss      += loss.item()
@@ -134,7 +112,7 @@ class Trainer():
                 CONN_Loss_v   += CONN.item()
                 target_Loss_v += target.item()
 
-        val_loss /= batch_count
+        val_loss      /= batch_count
         CoAM_Loss_v   /= batch_count
         E_Loss_v      /= batch_count
         CONN_Loss_v   /= batch_count

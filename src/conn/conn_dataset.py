@@ -41,9 +41,9 @@ class CONNDataset(Dataset):
         self.__dataset = h5py.File(f'{dir}/{file_name}','r')
 
         self.__data =self.__dataset[split]
-        self.inputs = self.__data[CONNDataset.input_label][:]
-        self.targets = self.__data[CONNDataset.target_label][:]
-        self.lens = self.__data[CONNDataset.len_label][:]
+        self.inputs = self.__data[CONNDataset.input_label][:100]
+        self.targets = self.__data[CONNDataset.target_label][:100]
+        self.lens = self.__data[CONNDataset.len_label][:100]
 
         # Assuming X is a three-dimensional array with shape (num_sequences, seq_length, num_features)
         in_sequences, in_seq_length, in_features = self.inputs.shape

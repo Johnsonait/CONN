@@ -51,6 +51,7 @@ class Crystal():
         self.Q = Q
         
         self.ELAS = self.__ELAS(C11=C11,C12=C12,C44=C44)
+        self.ELAS_4th_order = self.__Fourth_Order(self.ELAS)
 
         self.SA = self.__SA()
         self.PA = self.__PA(self.SA)
@@ -80,6 +81,17 @@ class Crystal():
             SA_sys = SA[sys,:,:]
             WA[sys,:,:] = 0.5*(SA_sys - np.transpose(SA_sys))
         return WA
+
+    def __Fourth_Order(self,ELAS):
+        # Convert the 6x6 matrix to a 4th order tensor
+        ELAS_4th_order = np.zeros((3, 3, 3, 3))
+        for i in range(3):
+            for j in range(3):
+                for k in range(3):
+                    for l in range(3):
+                        ELAS_4th_order[i, j, k, l] = ELAS[i, j] * ELAS[k, l]
+
+        return ELAS_4th_order
 
 
     def __ELAS(self,C11,C12,C44):

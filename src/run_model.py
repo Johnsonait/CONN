@@ -14,34 +14,46 @@ class ModelTester():
         self.__target_scaler = dataset.target_scaler
 
     def run_model(self):
-        inputs,targets,lens = self.__dataset[0]
+        inputs,targets,lens = self.__dataset[1]
+
+        inputs = inputs.unsqueeze(0)
 
         h = None
         stress = None
-        preds = []
-        stresses = []
+        preds = None#[]
+        stresses = None#[]
         self.__model.eval()
         with torch.no_grad():
-            for t in range(inputs.shape[0]):
-                out,stress, h = self.__model(inputs[t,:],stress,h)
+            #for t in range(inputs.shape[0]):
+            #    out,stress, h = self.__model(inputs[t,:],stress,h)
+            #    stresses.append(stress)
+            #   preds.append(out)
 
-                stresses.append(stress)
-                preds.append(out)
+            #preds = torch.stack(preds)
+            #stresses = torch.stack(stresses)
+            #preds = torch.transpose(preds,dim0=1,dim1=0).squeeze(0)
+            #stresses = torch.transpose(stresses ,dim0=1,dim1=0).squeeze(0)
 
-            preds = torch.stack(preds)
-            stresses = torch.stack(stresses)
-            preds = torch.transpose(preds,dim0=1,dim1=0).squeeze(0)
-            stresses = torch.transpose(stresses ,dim0=1,dim1=0).squeeze(0)
+            preds,stresses, _ = self.__model(inputs)
 
-            stresses = stresses[:,:9]#self.__scaler_inv(stresses[:,:6],slice(0,6))
+            #stresses = self.__scaler_inv(stresses[:,:6],slice(0,6))
+            stresses = stresses.squeeze(0)
             targ_stresses = targets[:,:9]#self.__scaler_inv(targets[:,:6],slice(0,6))
-
-            plt.plot(stresses[:,:],label='Model Output')
-            plt.plot(targ_stresses[:,:],label='Target',color='black',linestyle='--')
-            plt.show()
+            index = slice(0,3)
+            plt.plot(stresses[:,index],label='Model Output')
+            plt.plot(targ_stresses[:,index],label='Target',color='black',linestyle='--')
+            #plt.plot(preds[:,index],label='Model Output')
+            #plt.plot(targets[:,index],label='Target',color='black',linestyle='--')
 
         return
 
+    def set_model(self,model):
+        self.__model = model
+        return
+
+    def show(self):
+        plt.show()
+        return
 
     def __scaler_inv(self,values, index):
         mins = self.__target_scaler.data_min_

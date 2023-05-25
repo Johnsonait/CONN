@@ -15,12 +15,19 @@ class CrystalCONN(CONN):
     __INS  = {
         'dt' : slice(0,1),
         'L' : slice(1,10),
-        'stress' : slice(10,19)
+        'strain': slice(10,16),
+        'stress' : slice(16,25)
     }
 
-    __in_sz = 1+9
+    __in_sz = 1+9+6
 
     __OUTS = {
+        'dstress' : slice(0,9),
+        'dslip' : slice(9,9+__n_slip),
+        'tau' : slice(9+__n_slip, 9+2*__n_slip),
+        'Le' : slice(9+2*__n_slip,9+2*__n_slip+9)
+    }
+    __TARGETS = {
         'stress' : slice(0,9),
         'dstress' : slice(9,18),
         'dslip' : slice(18,18+__n_slip),
@@ -37,47 +44,58 @@ class CrystalCONN(CONN):
     def __init__(
                  self,
                  hidden_size=128,
-                 loss_fcn = nn.MSELoss,
+                 loss_fcn = nn.L1Loss,
                  device=torch.device('cpu')):
         super().__init__()
         self.hidden_size = hidden_size
         self.device = device
         self.loss_fcn = loss_fcn()
         self.__crystal: Crystal = Crystal()
+        self.ELAS = torch.tensor(self.__crystal.ELAS_4th_order, device=self.device)
 
-        self.GRU = nn.GRUCell(
+        #self.GRU = nn.GRUCell(
+        #    input_size = CrystalCONN.__in_sz+CrystalCONN.__stress_sz,
+        #    hidden_size = hidden_size,
+        #    device = device
+        #)
+        self.GRU = nn.GRU(
             input_size = CrystalCONN.__in_sz+CrystalCONN.__stress_sz,
             hidden_size = hidden_size,
+            num_layers = 1,
+            batch_first = True,
+            bidirectional = False,
             device = device
         )
 
-        self.output_layer = nn.Linear(hidden_size,CrystalCONN.__out_sz,device=device)
+        self.output_layer = nn.Linear(hidden_size,CrystalCONN.__out_sz-9,device=device)
+
+        self.stress_layer = nn.Linear(CrystalCONN.__out_sz-9,9,device=device)
 
         self.double()
 
     def __init_hidden(self,batch_size):
-        return torch.zeros((batch_size,self.hidden_size),device=self.device,dtype=torch.float64,requires_grad=True)
+        return torch.zeros(
+                (batch_size,self.hidden_size),
+                device=self.device,
+                dtype=torch.float64,
+                requires_grad=True
+            )
 
     def __init_stress(self,batch_size):
-        return torch.zeros((batch_size,self.__stress_sz),device=self.device,dtype=torch.float64,requires_grad=True)
+        return torch.zeros(
+                (batch_size,self.__stress_sz),
+                device=self.device,
+                dtype=torch.float64,
+                requires_grad=True
+            )
     
-    def forward(self, x: Tensor,stress: Tensor=None,h: Tensor=None):
-        assert x.dim() in (1,2), \
-            f"CONN: Expected input to be 1-D or 2-D but received {x.dim()}-D tensor"
-        is_batched = x.dim() == 2
+    def forward(self, x: Tensor):
 
-        if not is_batched:
-            x = x.unsqueeze(0)
-        batch_size = x.size(0)
+        out, h_out = self.GRU(x)
 
-        if stress is None:
-            stress = self.__init_stress(batch_size)
+        out = self.output_layer(out)
 
-        h_out = self.GRU(torch.cat((x[:,:-9],stress),dim=1),h)
-
-        out = self.output_layer(h_out)
-
-        stress = (out[:,CrystalCONN.__OUTS['dstress']]+x[:,CrystalCONN.__INS['stress']]).clone()
+        stress = self.stress_layer(out)
 
         return out,stress,h_out
     
@@ -93,6 +111,7 @@ class CrystalCONN(CONN):
     def fast_loss(self, inputs, outputs, stresses, targets):
         """This is a vectorized form of the loss function to speed up computation
         on GPUs"""
+        
         dt = inputs[:, :, CrystalCONN.__INS['dt']]
         L = inputs[:, :, CrystalCONN.__INS['L']]
         stress_in = inputs[:, :, CrystalCONN.__INS['stress']]
@@ -103,18 +122,46 @@ class CrystalCONN(CONN):
         Le = outputs[:, :, CrystalCONN.__OUTS['Le']]
 
         stress_out = stresses[:, :, CrystalCONN.__STRESS]
-        target_stress = targets[:, :, CrystalCONN.__OUTS['stress']]
+        target_stress = targets[:, :, CrystalCONN.__TARGETS['stress']]
+        targets = targets[:,:,9:]
 
         De = self.__sym(Le)
 
+        # Evaluate losses associated with "target" data
         target_Loss = self.loss_fcn(stress_out, target_stress)
+        target_Loss = target_Loss + self.loss_fcn(outputs,targets)
+        init_Loss = torch.square(self.initial_conditions(outputs,targets))
 
-        CoAM_Loss = torch.square(torch.mean(self.symmetry_eqn(stress=stress_out), dim=(1, 2))).mean()
-        E_Loss = torch.square(self.energy_eqn(dt, stress_in, L, De, tau, dslip)).mean()
-        CONN_Loss = torch.square(torch.mean(self.constitutive_eqn(dt, stress_in, dstress, L, dslip), dim=(1, 2))).mean()
+        # Evaluate stress tensor symmetry (Convervation of Angular Momentum) for loss
+        CoAM_Loss = torch.sum(
+                            torch.square(
+                                    self.symmetry_eqn(stress=stress_out)),
+                                dim=(2)
+                            ).mean(dim=(0,1))
+        # Evaluate energy equation for loss
+        E_Loss = torch.square(
+                        self.energy_eqn(
+                                dt, 
+                                stress_in, 
+                                L, 
+                                De, 
+                                tau, 
+                                dslip)
+                            ).mean()
+        # Evaluate constitutive model terms for loss
+        CONN_Loss = torch.sum(
+                            torch.square(
+                                self.constitutive_eqn(
+                                    dt, 
+                                    stress_in, 
+                                    dstress, 
+                                    L, 
+                                    dslip)
+                                    ),
+                                dim=(2)
+                            ).mean(dim=(0,1))
 
-        loss = target_Loss + CoAM_Loss + E_Loss + CONN_Loss
-        loss = loss
+        loss = E_Loss + CoAM_Loss + target_Loss + init_Loss + CONN_Loss
 
         return loss, CoAM_Loss, E_Loss, CONN_Loss, target_Loss
 
@@ -199,7 +246,8 @@ class CrystalCONN(CONN):
         return stress
     
     def constitutive_eqn(self,dt,stress,dstress,L,dslip):
-
+        """Evaluate constitutive model terms (in incremental form) to be used
+        in loss as a regularizer for training."""
         dD = self.__sym(L)*dt
         domega = self.__asym(L)*dt
 
@@ -227,6 +275,7 @@ class CrystalCONN(CONN):
         return ret
     
     def energy_eqn(self, dt, stress, L, De, tau, dslip):
+        """Evaluate energy terms to be used for regularization in loss."""
         D = self.__sym(L)
         dD = torch.mul(D[:,:],dt[:,:])
         dDe = torch.mul(De[:,:],dt[:,:])
@@ -234,6 +283,12 @@ class CrystalCONN(CONN):
         ret = torch.einsum('...k,...k->...',stress,dD)
         ret = ret - torch.einsum('...k,...k->...',stress,dDe)
         ret = ret - torch.einsum('...k,...k->...',tau,dslip)
+
+        return ret
+
+    def initial_conditions(self,outputs,targets):
+
+        ret = self.loss_fcn(outputs[:,0,:],targets[:,0,:])
 
         return ret
 
@@ -256,7 +311,6 @@ class CrystalCONN(CONN):
         result = result.reshape(result.shape[0],result.shape[1],9)
         return result
 
-
     def __transpose(self, A: torch.Tensor):
         # Get the shape of the input tensor
         shape = A.shape
@@ -276,15 +330,18 @@ class CrystalCONN(CONN):
         A = A.reshape(A.shape[0],A.shape[1],9)
         ret = A[:,:,::4].sum(dim=-1)
         return ret
-    
-    def __ELAS_ddot_A(self, A: torch.Tensor, crystal: Crystal):
-        ret = A.clone()
-        ELAS = torch.tensor(crystal.ELAS, device=self.device)
-        ELAS_expanded = torch.zeros((A.shape[0],A.shape[1],9,9),device=self.device,dtype=torch.float64)
-        ELAS_expanded[:,:,:6,:6] = ELAS
-        ret[:,:] = torch.einsum('...ik,...k->...i', ELAS_expanded[:,:], ret[:,:])
 
-        ret[:, :, -3:] = ret[:, :, -6:-3]
+    def __ELAS_ddot_A(self, A: torch.Tensor, crystal: Crystal):
+        """Perform contraction of 2nd order tensor A (stored as 9-component vector)
+        with true 4th order elastic constants tensor.
+        """
+        ret = A.clone()
+        ret = ret.reshape(A.shape[0],A.shape[1],3,3)
+
+        # Perform contraction using einsum
+        ret = torch.einsum('...ijkl,...kl->...ij', self.ELAS, ret)
+
+        ret = ret.reshape(A.shape[0],A.shape[1],9)
         return ret
 
 
